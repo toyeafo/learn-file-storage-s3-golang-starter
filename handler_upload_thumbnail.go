@@ -1,10 +1,12 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -46,15 +48,13 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	mediatype := fileheader.Header.Get("Content-Type")
-	if mediatype == "" {
-		respondWithError(w, http.StatusBadRequest, "missing content type", nil)
+	mediaType, _, err := mime.ParseMediaType(fileheader.Header.Get("Content-Type"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "error parsing media type", err)
 		return
 	}
-
-	imagedata, err := io.ReadAll(file)
-	if err != nil {
-		respondWithError(w, 500, "error reading from uploaded file", err)
+	if mediaType != "image/jpeg" && mediaType != "image/png" {
+		respondWithError(w, http.StatusBadRequest, "media type not allowed", nil)
 		return
 	}
 
@@ -66,11 +66,27 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	if vidMetadata.UserID != userID {
 		respondWithError(w, http.StatusUnauthorized, "not authorised to make the update", nil)
+		return
 	}
 
-	imagedataString := base64.StdEncoding.EncodeToString(imagedata)
-	dataURL := fmt.Sprintf("data:%s;base64,%s", mediatype, imagedataString)
-	vidMetadata.ThumbnailURL = &dataURL
+	imageFile := getAssetPath(videoID, mediaType)
+	imageFileLoc := filepath.Join(cfg.assetsRoot, imageFile)
+
+	fileCreate, err := os.Create(imageFileLoc)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "error creating file on disk", err)
+		return
+	}
+	defer fileCreate.Close()
+
+	_, err = io.Copy(fileCreate, file)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "error saving file to disk", err)
+		return
+	}
+
+	fullFileLoc := cfg.getAssetURL(imageFile)
+	vidMetadata.ThumbnailURL = &fullFileLoc
 
 	err = cfg.db.UpdateVideo(vidMetadata)
 	if err != nil {
