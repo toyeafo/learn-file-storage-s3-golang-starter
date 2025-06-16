@@ -19,6 +19,10 @@ func (cfg apiConfig) getAssetURL(assetPath string) string {
 	return fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, assetPath)
 }
 
+func (cfg apiConfig) getS3AssetURL(assetKey string) string {
+	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, assetKey)
+}
+
 func getAssetPath(mediaType string) string {
 	key := make([]byte, 32)
 	rand.Read(key)
