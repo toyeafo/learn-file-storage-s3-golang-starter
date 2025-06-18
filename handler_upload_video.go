@@ -20,6 +20,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Authenticate the user
 	token, err := auth.GetBearerToken(r.Header)
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT", err)
@@ -32,6 +33,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Retrieve video metadata
 	vidMetadata, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "error retrieving vid details", err)
@@ -45,7 +47,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	fmt.Println("uploading video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
+	// Limit request size to 1GB
 	const maxMemory = 1 << 30
 	r.Body = http.MaxBytesReader(w, r.Body, maxMemory)
 
@@ -55,14 +57,16 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	file, fileheader, err := r.FormFile("video")
+	// Read file from form
+	file, fileHeader, err := r.FormFile("video")
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "error reading file from form", err)
 		return
 	}
 	defer file.Close()
 
-	mediaType, _, err := mime.ParseMediaType(fileheader.Header.Get("Content-Type"))
+	// Check content type
+	mediaType, _, err := mime.ParseMediaType(fileHeader.Header.Get("Content-Type"))
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "error parsing media type", err)
 		return
@@ -72,28 +76,56 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	imageFile := getAssetPath(mediaType)
-	// imageFileLoc := filepath.Join(cfg.assetsRoot, imageFile)
+	videoKey := getAssetPath(mediaType)
 
-	fileCreate, err := os.CreateTemp("", "tubely-upload.mp4")
+	// Save uploaded file to temp disk file
+	tempInputFile, err := os.CreateTemp("", "tubely-upload.mp4")
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "error creating file on disk", err)
+		respondWithError(w, http.StatusInternalServerError, "error creating temp file on disk", err)
 		return
 	}
-	defer os.Remove(fileCreate.Name())
-	defer fileCreate.Close()
+	defer os.Remove(tempInputFile.Name())
+	defer tempInputFile.Close()
 
-	_, err = io.Copy(fileCreate, file)
+	_, err = io.Copy(tempInputFile, file)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "error saving file to disk", err)
 		return
 	}
-	fileCreate.Seek(0, io.SeekStart)
 
+	if _, err := tempInputFile.Seek(0, io.SeekStart); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to rewind file", err)
+		return
+	}
+
+	// Process the video for fast start
+	processedPath, err := processVideoForFastStart(tempInputFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Video processing failed", err)
+		return
+	}
+	defer os.Remove(processedPath)
+
+	processedFile, err := os.Open(processedPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to open processed video", err)
+		return
+	}
+	defer processedFile.Close()
+
+	// Get the aspect ratio of the video
+	ratio, err := getVideoAspectRatio(processedPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "error getting video aspect ratio", err)
+		return
+	}
+	s3Key := fmt.Sprintf("%s_%s", ratio, videoKey)
+
+	// Upload the video to S3
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
-		Key:         &imageFile,
-		Body:        fileCreate,
+		Key:         &s3Key,
+		Body:        processedFile,
 		ContentType: &mediaType,
 	})
 	if err != nil {
@@ -101,8 +133,9 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	fullFileLoc := cfg.getS3AssetURL(imageFile)
-	vidMetadata.VideoURL = &fullFileLoc
+	// Update DB with video URL
+	fileURL := cfg.getS3AssetURL(s3Key)
+	vidMetadata.VideoURL = &fileURL
 
 	err = cfg.db.UpdateVideo(vidMetadata)
 	if err != nil {
@@ -110,5 +143,6 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	fmt.Printf("Successfully uploaded video %s (%s) to %s\n", videoID, ratio, fileURL)
 	respondWithJSON(w, http.StatusOK, vidMetadata)
 }
