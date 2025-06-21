@@ -36,17 +36,14 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	// TODO: implement the upload here
 	const maxMemory = 10 << 20
-	err = r.ParseMultipartForm(maxMemory)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "error parsing memory", err)
-		return
-	}
+	r.ParseMultipartForm(maxMemory)
 
 	file, fileheader, err := r.FormFile("thumbnail")
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "error reading file from form", err)
 		return
 	}
+	defer file.Close()
 
 	mediaType, _, err := mime.ParseMediaType(fileheader.Header.Get("Content-Type"))
 	if err != nil {
@@ -55,17 +52,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	if mediaType != "image/jpeg" && mediaType != "image/png" {
 		respondWithError(w, http.StatusBadRequest, "media type not allowed", nil)
-		return
-	}
-
-	vidMetadata, err := cfg.db.GetVideo(videoID)
-	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "error retrieving vid details", err)
-		return
-	}
-
-	if vidMetadata.UserID != userID {
-		respondWithError(w, http.StatusUnauthorized, "not authorised to make the update", nil)
 		return
 	}
 
@@ -85,9 +71,19 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	vidMetadata, err := cfg.db.GetVideo(videoID)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "error retrieving vid details", err)
+		return
+	}
+
+	if vidMetadata.UserID != userID {
+		respondWithError(w, http.StatusUnauthorized, "not authorised to make the update", nil)
+		return
+	}
+
 	fullFileLoc := cfg.getAssetURL(imageFile)
 	vidMetadata.ThumbnailURL = &fullFileLoc
-
 	err = cfg.db.UpdateVideo(vidMetadata)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "error updating video", err)

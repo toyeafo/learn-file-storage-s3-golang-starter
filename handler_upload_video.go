@@ -7,12 +7,17 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 )
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
+	// Limit request size to 1GB
+	const maxMemory = 1 << 30
+	r.Body = http.MaxBytesReader(w, r.Body, maxMemory)
+
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
 	if err != nil {
@@ -36,20 +41,15 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	// Retrieve video metadata
 	vidMetadata, err := cfg.db.GetVideo(videoID)
 	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "error retrieving vid details", err)
+		respondWithError(w, http.StatusInternalServerError, "error retrieving vid details", err)
 		return
 	}
-
 	if vidMetadata.UserID != userID {
 		respondWithError(w, http.StatusUnauthorized, "not authorised to make the update", nil)
 		return
 	}
 
 	fmt.Println("uploading video", videoID, "by user", userID)
-
-	// Limit request size to 1GB
-	const maxMemory = 1 << 30
-	r.Body = http.MaxBytesReader(w, r.Body, maxMemory)
 
 	err = r.ParseMultipartForm(maxMemory)
 	if err != nil {
@@ -87,8 +87,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	defer os.Remove(tempInputFile.Name())
 	defer tempInputFile.Close()
 
-	_, err = io.Copy(tempInputFile, file)
-	if err != nil {
+	if _, err = io.Copy(tempInputFile, file); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "error saving file to disk", err)
 		return
 	}
@@ -119,14 +118,14 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusInternalServerError, "error getting video aspect ratio", err)
 		return
 	}
-	s3Key := fmt.Sprintf("%s_%s", ratio, videoKey)
+	s3Key := fmt.Sprintf("%s%s", ratio, videoKey)
 
 	// Upload the video to S3
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
-		Bucket:      &cfg.s3Bucket,
-		Key:         &s3Key,
+		Bucket:      aws.String(cfg.s3Bucket),
+		Key:         aws.String(s3Key),
 		Body:        processedFile,
-		ContentType: &mediaType,
+		ContentType: aws.String(mediaType),
 	})
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "error uploading file to S3", err)
@@ -136,7 +135,6 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	// Update DB with video URL
 	fileURL := cfg.getS3AssetURL(s3Key)
 	vidMetadata.VideoURL = &fileURL
-
 	err = cfg.db.UpdateVideo(vidMetadata)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "error updating video", err)

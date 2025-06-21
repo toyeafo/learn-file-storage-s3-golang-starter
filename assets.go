@@ -30,15 +30,7 @@ func (cfg apiConfig) getAssetURL(assetPath string) string {
 }
 
 func (cfg apiConfig) getS3AssetURL(assetKey string) string {
-	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, assetKey)
-}
-
-func getAssetPath(mediaType string) string {
-	key := make([]byte, 32)
-	rand.Read(key)
-	encodedKey := base64.RawURLEncoding.EncodeToString(key)
-	ext := mediaTypetoExt(mediaType)
-	return fmt.Sprintf("%s%s", encodedKey, ext)
+	return fmt.Sprintf("https://%s/%s", cfg.s3CfDistribution, assetKey)
 }
 
 func mediaTypetoExt(mediaType string) string {
@@ -47,6 +39,14 @@ func mediaTypetoExt(mediaType string) string {
 		return ".bin"
 	}
 	return "." + mediatypesplit[1]
+}
+
+func getAssetPath(mediaType string) string {
+	key := make([]byte, 32)
+	rand.Read(key)
+	encodedKey := base64.RawURLEncoding.EncodeToString(key)
+	ext := mediaTypetoExt(mediaType)
+	return fmt.Sprintf("%s%s", encodedKey, ext)
 }
 
 func getVideoAspectRatio(inputPath string) (string, error) {
@@ -81,7 +81,7 @@ func calculateAspectRatio(width, height int) string {
 	divisor := gcd(width, height)
 	simplifiedWidth := width / divisor
 	simplifiedHeight := height / divisor
-	// ratio := fmt.Sprintf("%d:%d", simplifiedWidth, simplifiedHeight)
+
 	switch {
 	default:
 		return "other"
